@@ -14,7 +14,7 @@ export type ConditionSpec = {
   };
   motion: {
     autoplay: boolean;
-    speed: { unit: "wpm" | "pxps"; value: number };
+    speed: { unit: "cps" | "pxps"; value: number };
     direction: "vertical" | "horizontal";
     progression: "continuous" | "step";
     pauseAtPunctuation: { enabled: boolean; delayMs: number };
@@ -37,7 +37,7 @@ export const conditionSpec: ConditionSpec = {
   },
   motion: {
     autoplay: true,
-    speed: { unit: "wpm", value: 300 },
+    speed: { unit: "cps", value: 24 },
     direction: "horizontal",
     progression: "step",
     pauseAtPunctuation: { enabled: false, delayMs: 250 },

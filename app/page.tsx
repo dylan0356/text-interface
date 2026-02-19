@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { conditionSpec, type ConditionSpec } from "@/lib/condition-spec";
 
 type LogEntry = {
-  event: "start" | "stop" | "tick";
+  event: "start" | "stop" | "tick" | "manual";
   index: number;
   timestamp: string;
 };
@@ -37,15 +37,87 @@ function getStepIndex(step: ViewportStep): number {
   return VIEWPORT_STEPS.indexOf(step);
 }
 
+function getViewportTokenCount(step: ViewportStep): number {
+  if (step === "letter-1" || step === "word-1" || step === "sentence") {
+    return 1;
+  }
+  if (step === "letter-2" || step === "word-2") {
+    return 2;
+  }
+  return 3;
+}
+
+function getRsvpDisplayToken(
+  tokens: string[],
+  startIndex: number,
+  viewportTokenCount: number,
+  unit: TokenizationUnit,
+): string {
+  if (!tokens.length) {
+    return "";
+  }
+
+  const size = Math.max(1, Math.floor(viewportTokenCount || 1));
+  const safeStart = ((startIndex % tokens.length) + tokens.length) % tokens.length;
+  if (size === 1) {
+    return tokens[safeStart] ?? "";
+  }
+
+  const windowTokens: string[] = [];
+  for (let i = 0; i < size; i += 1) {
+    windowTokens.push(tokens[(safeStart + i) % tokens.length] ?? "");
+  }
+  return windowTokens.join(unit === "char" ? "" : " ");
+}
+
+function splitAroundCenterCharacter(value: string): {
+  left: string;
+  center: string;
+  right: string;
+} {
+  if (!value) {
+    return { left: "", center: "", right: "" };
+  }
+  const chars = Array.from(value);
+  const centerIndex = Math.floor(chars.length / 2);
+  return {
+    left: chars.slice(0, centerIndex).join(""),
+    center: chars[centerIndex] ?? "",
+    right: chars.slice(centerIndex + 1).join(""),
+  };
+}
+
 function endsWithPausePunctuation(token: string): boolean {
   return /[.,!?;:]["')\]]?$/.test(token.trim());
 }
 
 function speedToPxPerSecond(spec: ConditionSpec): number {
-  const value = Math.max(1, spec.motion.speed.value);
-  const wordsPerSecond = value / 60;
-  const approxWordPx = spec.typography.fontSizePx * 3.6;
-  return Math.max(10, wordsPerSecond * approxWordPx);
+  const charsPerSecond = Math.max(1, spec.motion.speed.value);
+  const approxCharPx =
+    spec.typography.fontSizePx * 0.62 + spec.typography.letterSpacingPx;
+  return Math.max(10, charsPerSecond * Math.max(1, approxCharPx));
+}
+
+function getAdvanceCharacterCount(
+  tokens: string[],
+  startIndex: number,
+  advanceCount: number,
+  unit: TokenizationUnit,
+): number {
+  if (!tokens.length) {
+    return 1;
+  }
+
+  const safeStart = ((startIndex % tokens.length) + tokens.length) % tokens.length;
+  const size = Math.max(1, Math.floor(advanceCount || 1));
+  const movedTokens: string[] = [];
+
+  for (let i = 0; i < size; i += 1) {
+    movedTokens.push(tokens[(safeStart + i) % tokens.length] ?? "");
+  }
+
+  const movedText = movedTokens.join(unit === "char" ? "" : " ");
+  return Math.max(1, movedText.length);
 }
 
 function tokenizeText(
@@ -83,16 +155,33 @@ function tokenizeText(
 }
 
 function RsvpRenderer({ spec, token }: { spec: ConditionSpec; token: string }) {
+  const { left, center, right } = splitAroundCenterCharacter(token);
   return (
     <div className="flex h-full w-full items-center justify-center">
       <div
-        className="text-center"
+        className="grid w-full grid-cols-[1fr_auto_1fr] items-center select-none"
         style={{
+          fontFamily: spec.typography.fontFamily,
           fontSize: spec.typography.fontSizePx,
           lineHeight: spec.typography.lineHeight,
+          letterSpacing: spec.typography.letterSpacingPx,
+          wordSpacing: spec.typography.wordSpacingPx,
+          fontVariationSettings: spec.typography.variableAxes
+            ? Object.entries(spec.typography.variableAxes)
+                .map(([axis, value]) => `"${axis}" ${value}`)
+                .join(", ")
+            : undefined,
         }}
       >
-        {token || "Enter text to begin"}
+        {token ? (
+          <>
+            <span className="justify-self-end whitespace-pre text-right">{left}</span>
+            <span className="whitespace-pre">{center}</span>
+            <span className="whitespace-pre">{right}</span>
+          </>
+        ) : (
+          <span className="col-span-3 text-center">Enter text to begin</span>
+        )}
       </div>
     </div>
   );
@@ -226,14 +315,23 @@ function Viewport({
   text,
   rsvpToken,
   rsvpTokens,
+  manualAdvanceEnabled,
+  onManualAdvance,
 }: {
   spec: ConditionSpec;
   text: string;
   rsvpToken: string;
   rsvpTokens: string[];
+  manualAdvanceEnabled: boolean;
+  onManualAdvance: () => void;
 }) {
   return (
-    <div className="h-full w-full overflow-hidden border border-zinc-300">
+    <div
+      className={`h-full w-full overflow-hidden border border-zinc-300 select-none ${
+        manualAdvanceEnabled ? "cursor-pointer" : ""
+      }`}
+      onClick={manualAdvanceEnabled ? onManualAdvance : undefined}
+    >
       {spec.mode === "rsvp" && spec.motion.progression === "continuous" ? (
         <ContinuousRsvpRenderer
           key={`${spec.motion.direction}-${spec.motion.speed.value}-${rsvpTokens.join("|")}`}
@@ -254,10 +352,11 @@ export default function Home() {
     ...conditionSpec,
     motion: {
       ...conditionSpec.motion,
-      speed: { ...conditionSpec.motion.speed, unit: "wpm" },
+      speed: { ...conditionSpec.motion.speed, unit: "cps" },
     },
   });
   const [viewportStep, setViewportStep] = useState<ViewportStep>("word-1");
+  const [advanceStep, setAdvanceStep] = useState(1);
   const [rsvpIndex, setRsvpIndex] = useState(0);
   const [isSpecModalOpen, setIsSpecModalOpen] = useState(false);
   const [isSettingsVisible, setIsSettingsVisible] = useState(true);
@@ -276,20 +375,78 @@ export default function Home() {
   }, []);
 
   const rsvpTokens = useMemo(
-    () =>
-      tokenizeText(text, spec.tokenization.unit, spec.tokenization.chunkSize),
-    [text, spec.tokenization.unit, spec.tokenization.chunkSize],
+    () => tokenizeText(text, spec.tokenization.unit, 1),
+    [text, spec.tokenization.unit],
+  );
+  const viewportTokenCount = useMemo(
+    () => getViewportTokenCount(viewportStep),
+    [viewportStep],
+  );
+  const maxAdvanceStep = viewportTokenCount;
+  const effectiveAdvanceStep = Math.max(
+    1,
+    Math.min(maxAdvanceStep, Math.floor(advanceStep || 1)),
   );
   const safeRsvpIndex = rsvpTokens.length ? rsvpIndex % rsvpTokens.length : 0;
-  const currentRsvpToken = rsvpTokens.length ? rsvpTokens[safeRsvpIndex] : "";
+  const currentRsvpToken = getRsvpDisplayToken(
+    rsvpTokens,
+    safeRsvpIndex,
+    viewportTokenCount,
+    spec.tokenization.unit,
+  );
+  const canManualAdvance =
+    spec.mode === "rsvp" &&
+    spec.motion.progression === "step" &&
+    !spec.motion.autoplay &&
+    rsvpTokens.length > 0;
 
   useEffect(() => {
     rsvpIndexRef.current = safeRsvpIndex;
   }, [safeRsvpIndex]);
 
+  const advanceRsvp = useCallback(
+    (event: "tick" | "manual") => {
+      if (spec.mode !== "rsvp" || rsvpTokens.length === 0) {
+        return null;
+      }
+      const currentIndex = rsvpIndexRef.current;
+      const next = (currentIndex + effectiveAdvanceStep) % rsvpTokens.length;
+      rsvpIndexRef.current = next;
+      setRsvpIndex(next);
+      appendLog({
+        event,
+        index: next,
+        timestamp: new Date().toISOString(),
+      });
+      return {
+        token: getRsvpDisplayToken(
+          rsvpTokens,
+          next,
+          viewportTokenCount,
+          spec.tokenization.unit,
+        ),
+        advancedCharCount: getAdvanceCharacterCount(
+          rsvpTokens,
+          currentIndex,
+          effectiveAdvanceStep,
+          spec.tokenization.unit,
+        ),
+      };
+    },
+    [
+      appendLog,
+      effectiveAdvanceStep,
+      rsvpTokens,
+      spec.mode,
+      spec.tokenization.unit,
+      viewportTokenCount,
+    ],
+  );
+
   useEffect(() => {
     if (
       spec.mode !== "rsvp" ||
+      spec.motion.progression !== "step" ||
       !spec.motion.autoplay ||
       rsvpTokens.length === 0
     ) {
@@ -303,20 +460,18 @@ export default function Home() {
       if (cancelled) {
         return;
       }
-      const next = (rsvpIndexRef.current + 1) % rsvpTokens.length;
-      rsvpIndexRef.current = next;
-      setRsvpIndex(next);
-      appendLog({
-        event: "tick",
-        index: next,
-        timestamp: new Date().toISOString(),
-      });
-      const token = rsvpTokens[next] ?? "";
-      const speedValue = Math.max(50, spec.motion.speed.value);
-      const msPerToken = Math.max(50, Math.round(60000 / speedValue));
+      const result = advanceRsvp("tick");
+      if (!result) {
+        return;
+      }
+      const speedValue = Math.max(1, spec.motion.speed.value);
+      const msPerToken = Math.max(
+        20,
+        Math.round((result.advancedCharCount * 1000) / speedValue),
+      );
       const extraDelay =
         spec.motion.pauseAtPunctuation.enabled &&
-        endsWithPausePunctuation(token) &&
+        endsWithPausePunctuation(result.token) &&
         spec.motion.progression === "step"
           ? Math.max(0, spec.motion.pauseAtPunctuation.delayMs)
           : 0;
@@ -329,16 +484,42 @@ export default function Home() {
       window.clearTimeout(timeoutId);
     };
   }, [
-    appendLog,
-    rsvpTokens,
+    advanceRsvp,
+    rsvpTokens.length,
     spec.mode,
+    spec.motion.progression,
     spec.motion.autoplay,
-    spec.motion.direction,
     spec.motion.pauseAtPunctuation.delayMs,
     spec.motion.pauseAtPunctuation.enabled,
-    spec.motion.progression,
     spec.motion.speed.value,
   ]);
+
+  useEffect(() => {
+    if (!canManualAdvance) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== "Space") {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      const tagName = target?.tagName ?? "";
+      if (
+        tagName === "INPUT" ||
+        tagName === "TEXTAREA" ||
+        tagName === "SELECT" ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+      event.preventDefault();
+      advanceRsvp("manual");
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [advanceRsvp, canManualAdvance]);
 
   const setAutoplay = useCallback(
     (autoplay: boolean) => {
@@ -496,6 +677,8 @@ export default function Home() {
                 text={text}
                 rsvpToken={currentRsvpToken}
                 rsvpTokens={rsvpTokens}
+                manualAdvanceEnabled={canManualAdvance}
+                onManualAdvance={() => advanceRsvp("manual")}
               />
             </div>
           </section>
@@ -536,6 +719,7 @@ export default function Home() {
                         min={0}
                         max={VIEWPORT_STEPS.length - 1}
                         step={1}
+                        list="viewport-step-ticks"
                         value={getStepIndex(viewportStep)}
                         onChange={(e) =>
                           applyViewportStep(
@@ -544,6 +728,11 @@ export default function Home() {
                         }
                       />
                     </label>
+                    <datalist id="viewport-step-ticks">
+                      {VIEWPORT_STEPS.map((_, index) => (
+                        <option key={index} value={index} />
+                      ))}
+                    </datalist>
                     <div className="grid grid-cols-7 text-center text-xs text-zinc-500">
                       {VIEWPORT_STEPS.map((step) => (
                         <span
@@ -559,6 +748,36 @@ export default function Home() {
                       ))}
                     </div>
                   </div>
+                  <label className="flex flex-col gap-1 text-sm">
+                    Advance Step: {effectiveAdvanceStep}
+                    <input
+                      type="range"
+                      min={1}
+                      max={maxAdvanceStep}
+                      step={1}
+                      list="advance-step-ticks"
+                      value={effectiveAdvanceStep}
+                      onChange={(e) =>
+                        setAdvanceStep(
+                          Math.max(
+                            1,
+                            Math.min(
+                              maxAdvanceStep,
+                              Number(e.target.value) || 1,
+                            ),
+                          ),
+                        )
+                      }
+                    />
+                    <datalist id="advance-step-ticks">
+                      {Array.from({ length: maxAdvanceStep }, (_, i) => i + 1).map((value) => (
+                        <option key={value} value={value} />
+                      ))}
+                    </datalist>
+                    <span className="text-xs text-zinc-500">
+                      Allowed range: 1-{maxAdvanceStep}
+                    </span>
+                  </label>
 
                   <div className="grid gap-4">
                     <section className="space-y-3 rounded border border-zinc-200 p-3 text-sm">
@@ -575,13 +794,13 @@ export default function Home() {
                           Autoplay
                         </label>
                         <label className="flex flex-col gap-1">
-                          Speed (WPM): {spec.motion.speed.value}
+                          Speed (chars/sec): {spec.motion.speed.value}
                           <input
                             className="w-full"
                             type="range"
-                            min={50}
-                            max={1200}
-                            step={10}
+                            min={1}
+                            max={80}
+                            step={1}
                             value={spec.motion.speed.value}
                             onChange={(e) =>
                               setSpec((prev) => ({
@@ -589,8 +808,8 @@ export default function Home() {
                                 motion: {
                                   ...prev.motion,
                                   speed: {
-                                    unit: "wpm",
-                                    value: Math.max(50, Number(e.target.value) || 50),
+                                    unit: "cps",
+                                    value: Math.max(1, Number(e.target.value) || 1),
                                   },
                                 },
                               }))
@@ -708,6 +927,11 @@ export default function Home() {
                           {safeRsvpIndex + 1}/{Math.max(1, rsvpTokens.length)}
                         </span>
                       </div>
+                      {canManualAdvance ? (
+                        <p className="text-xs text-zinc-600">
+                          Manual mode: click the viewport or press Space to advance.
+                        </p>
+                      ) : null}
                     </section>
 
                     <section className="space-y-3 rounded border border-zinc-200 p-3 text-sm">
