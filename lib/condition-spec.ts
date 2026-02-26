@@ -1,6 +1,6 @@
 export type ConditionSpec = {
   version: "0.1";
-  mode: "rsvp" | "paragraph";
+  mode: "rsvp" | "continuous";
   window: { width: number; height: number };
   tokenization: { unit: "char" | "word" | "chunk" | "sentence"; chunkSize: number };
   typography: {
@@ -15,6 +15,14 @@ export type ConditionSpec = {
   motion: {
     autoplay: boolean;
     speed: { unit: "cps" | "pxps"; value: number };
+    rateControl: {
+      enabled: boolean;
+      source: "mouseY";
+      minCps: number;
+      maxCps: number;
+      invert: boolean;
+      resetOnLeave: boolean;
+    };
     direction: "vertical" | "horizontal";
     progression: "continuous" | "step";
     pauseAtPunctuation: { enabled: boolean; delayMs: number };
@@ -38,6 +46,14 @@ export const conditionSpec: ConditionSpec = {
   motion: {
     autoplay: true,
     speed: { unit: "cps", value: 24 },
+    rateControl: {
+      enabled: false,
+      source: "mouseY",
+      minCps: 8,
+      maxCps: 60,
+      invert: true,
+      resetOnLeave: true,
+    },
     direction: "horizontal",
     progression: "step",
     pauseAtPunctuation: { enabled: false, delayMs: 250 },
